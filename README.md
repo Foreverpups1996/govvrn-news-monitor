@@ -1,5 +1,7 @@
 # Монитор новостей govvrn.ru → Telegram
 
+**Репозиторий:** https://github.com/Foreverpups1996/govvrn-news-monitor
+
 Программа следит за лентой новостей <https://www.govvrn.ru/news/all> и отправляет
 **новые** новости в личные сообщения Telegram-контакту `@IF_13TIKHONOVA`.
 
