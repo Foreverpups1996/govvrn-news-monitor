@@ -170,7 +170,6 @@ def discover_proxies() -> list[str]:
     sources = (
         ("socks5h", "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=5000&country=RU"),
         ("http", "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=5000&country=RU"),
-        ("socks5h", "https://www.proxy-list.download/api/v1/get?type=socks5&country=RU"),
     )
     found: list[str] = []
     for scheme, url in sources:
@@ -630,13 +629,13 @@ def main() -> int:
         log("Режим --dry-run: ничего не отправлено и не сохранено.")
         return 0
 
-    sent = set()
+    sent = 0
     errors = 0
     for item in new_items:
         try:
             send_message(token, chat_id, format_message(item))
             log(f"  ✔ отправлено: {item['title'][:60]}")
-            sent |= item_keys(item)
+            sent += 1
             seen |= item_keys(item)
             time.sleep(1)  # не спамим API Telegram
         except Exception as exc:  # noqa: BLE001
@@ -648,7 +647,7 @@ def main() -> int:
         seen |= {k for i in items for k in item_keys(i)}
 
     save_state(seen, used_proxy)
-    log(f"Готово. Отправлено: {len(sent)}, ошибок: {errors}. Состояние сохранено.")
+    log(f"Готово. Отправлено сообщений: {sent}, ошибок: {errors}. Состояние сохранено.")
     return 1 if errors else 0
 
 
