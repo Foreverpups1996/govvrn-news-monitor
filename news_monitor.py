@@ -306,6 +306,14 @@ def main() -> int:
     parser.add_argument("--pages", type=int, default=2, help="сколько страниц ленты проверять")
     args = parser.parse_args()
 
+    # то же значение можно передать переменной окружения (используется в GitHub Actions)
+    if args.send_latest == 0:
+        try:
+            args.send_latest = int(os.environ.get("SEND_LATEST", "0") or 0)
+        except ValueError:
+            log("Переменная SEND_LATEST должна быть числом; игнорирую.")
+            args.send_latest = 0
+
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 
@@ -364,11 +372,15 @@ def main() -> int:
         )
         return 0
 
-    if first_run and args.send_latest > 0:
-        new_items = list(reversed(items[: args.send_latest]))  # от старых к новым
+    if args.send_latest > 0:
+        # «Догнать» N самых свежих ещё не отправленных новостей (от старых к новым)
+        pending = [i for i in items if i["url"] not in seen]
+        new_items = list(reversed(pending[: args.send_latest]))
+        mark_all_seen = True
     else:
         # Новости на ленте идут от новых к старым; шлём от старых к новым
         new_items = [i for i in reversed(items) if i["url"] not in seen]
+        mark_all_seen = False
 
     if not new_items:
         log("Новых новостей нет.")
@@ -397,7 +409,7 @@ def main() -> int:
             errors += 1
             log(f"  ✖ ошибка отправки: {exc}")
 
-    if first_run and args.send_latest > 0:
+    if mark_all_seen:
         # при разовом «догоне» помечаем всё, чтобы старое не ушло позже
         seen |= {i["url"] for i in items}
 

@@ -4,7 +4,13 @@ on:
   schedule:
     # Каждые 15 минут (время UTC; MSK = UTC+3)
     - cron: "*/15 * * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      send_latest:
+        description: "Сколько свежих новостей отправить сразу (0 — обычная проверка)"
+        required: false
+        default: "0"
+        type: string
 
 permissions:
   contents: write
@@ -37,6 +43,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_PROXY: ${{ secrets.TELEGRAM_PROXY }}
+          SEND_LATEST: ${{ inputs.send_latest }}
         run: python news_monitor.py
 
       - name: Сохранить состояние (чтобы не слать дубли)
