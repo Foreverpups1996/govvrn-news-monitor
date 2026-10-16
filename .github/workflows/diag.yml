@@ -15,7 +15,7 @@ permissions:
 jobs:
   diag:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Получить код
@@ -29,26 +29,35 @@ jobs:
           echo "date=$(date -u +%FT%TZ)"
           echo "runner_ip=$(curl -sS --max-time 20 https://api.ipify.org || echo fail)"
           echo
-          echo "=== DNS ==="
-          getent hosts www.govvrn.ru || echo "dns: fail"
-          echo
-          echo "=== govvrn.ru напрямую (6 попыток, таймаут 20с) ==="
-          for i in 1 2 3 4 5 6; do
-            code=$(curl -sS -o body.html -w "%{http_code} time=%{time_total}" --max-time 20 https://www.govvrn.ru/news/all 2>&1 || true)
+          echo "=== govvrn.ru напрямую (2 попытки, таймаут 12с) ==="
+          for i in 1 2; do
+            code=$(curl -sS -o body.html -w "%{http_code} time=%{time_total}" --max-time 12 https://www.govvrn.ru/news/all 2>&1 || true)
             size=$(stat -c %s body.html 2>/dev/null || echo 0)
             echo "attempt $i: $code size=$size"
-            if [ "${size:-0}" -gt 20000 ]; then echo "ОТВЕТ ПОЛУЧЕН"; break; fi
-            sleep 3
           done
           echo
-          echo "=== через https://api.allorigins.win (зарубежный прокси) ==="
-          curl -sS -o proxy1.out -w "code=%{http_code} time=%{time_total} size=%{size_download}\n" --max-time 30 "https://api.allorigins.win/raw?url=https%3A%2F%2Fwww.govvrn.ru%2Fnews%2Fall" || true
+          echo "=== t.me/s/govvrn36 (официальный TG-канал региона) ==="
+          curl -sS -o tg.html -w "code=%{http_code} time=%{time_total} size=%{size_download}\n" --max-time 25 https://t.me/s/govvrn36 || true
+          echo "кол-во сообщений (tgme_widget_message): $(grep -c 'tgme_widget_message_wrap' tg.html 2>/dev/null || echo 0)"
+          echo "--- первые ~500 символов текста ---"
+          sed -e 's/<[^>]*>/ /g' tg.html 2>/dev/null | tr -s ' \t\n' ' ' | head -c 500
           echo
-          echo "=== через https://r.jina.ai (зарубежный ридер) ==="
-          curl -sS -o proxy2.out -w "code=%{http_code} time=%{time_total} size=%{size_download}\n" --max-time 40 "https://r.jina.ai/https://www.govvrn.ru/news/all" || true
+          echo
+          echo "=== vk.com/govvrn36 ==="
+          curl -sS -o vk.html -w "code=%{http_code} time=%{time_total} size=%{size_download}\n" --max-time 25 https://vk.com/govvrn36 || true
+          echo
+          echo "=== бесплатные российские SOCKS5-прокси к govvrn.ru ==="
+          curl -sS --max-time 20 "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=5000&country=RU" -o proxies.txt || true
+          echo "получено прокси: $(wc -l < proxies.txt 2>/dev/null || echo 0)"
+          head -n 8 proxies.txt | while read -r p; do
+            if [ -n "$p" ]; then
+              out=$(curl -sS -o /dev/null -w "%{http_code} time=%{time_total}" --max-time 12 --socks5-hostname "$p" https://www.govvrn.ru/news/all 2>&1 || true)
+              echo "proxy $p -> $out"
+            fi
+          done
           echo
           echo "=== telegram getMe ==="
-          curl -sS --max-time 20 "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" | head -c 300 || echo "telegram: fail"
+          curl -sS --max-time 20 "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" | head -c 200 || echo "telegram: fail"
           echo
           echo "done"
 
