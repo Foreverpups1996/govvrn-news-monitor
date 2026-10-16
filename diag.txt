@@ -1,29 +1,41 @@
-date=2026-10-16T21:03:42Z
-runner_ip=52.248.45.87
+date=2026-10-16T21:10:25Z
+runner_ip=20.127.214.213
 
-=== DNS ===
-91.223.217.100  www.govvrn.ru
+=== govvrn.ru напрямую (2 попытки, таймаут 12с) ===
+attempt 1: curl: (28) Connection timed out after 12000 milliseconds
+000 time=12.000912 size=0
+attempt 2: curl: (28) Connection timed out after 12001 milliseconds
+000 time=12.001206 size=0
 
-=== govvrn.ru напрямую (6 попыток, таймаут 20с) ===
-attempt 1: curl: (28) Connection timed out after 20001 milliseconds
-000 time=20.001342 size=0
-attempt 2: curl: (28) Connection timed out after 20002 milliseconds
-000 time=20.002268 size=0
-attempt 3: curl: (28) Connection timed out after 20000 milliseconds
-000 time=20.000697 size=0
-attempt 4: curl: (28) Connection timed out after 20001 milliseconds
-000 time=20.001401 size=0
-attempt 5: curl: (28) Connection timed out after 20000 milliseconds
-000 time=20.000723 size=0
-attempt 6: curl: (28) Connection timed out after 20002 milliseconds
-000 time=20.002654 size=0
+=== t.me/s/govvrn36 (официальный TG-канал региона) ===
+code=200 time=0.620206 size=79937
+кол-во сообщений (tgme_widget_message): 6
+--- первые ~500 символов текста ---
+ Воронежская область – Telegram <meta http-equiv="X-UA-Compatible" content="IE=edge" /> <meta property="og:description" content="Официальный канал Правительства Воронежской области Регистрация канала https://knd.gov.ru/license?id=674006e5c577eb7c520fbd5a&amp;registryType=bloggersPermission Отдать голос: https://t.me/boost/govvrn36"> <meta name="twitter:description" content="Официальный ка�tr: write error: Broken pipe
 
-=== через https://api.allorigins.win (зарубежный прокси) ===
-code=408 time=8.165818 size=24
 
-=== через https://r.jina.ai (зарубежный ридер) ===
-code=422 time=18.549278 size=625
+=== vk.com/govvrn36 ===
+code=302 time=0.502583 size=0
+
+=== бесплатные российские SOCKS5-прокси к govvrn.ru ===
+получено прокси: 18
+proxy 91.204.57.48:8989 -> curl: (5) Unsupported proxy syntax in '91.204.57.48:8989': Malformed input to a URL function
+000 time=0.000000
+proxy 89.109.241.153:1081 -> curl: (5) Unsupported proxy syntax in '89.109.241.153:1081': Malformed input to a URL function
+000 time=0.000000
+proxy 37.18.73.60:5566 -> curl: (5) Unsupported proxy syntax in '37.18.73.60:5566': Malformed input to a URL function
+000 time=0.000000
+proxy 79.137.192.252:9050 -> curl: (5) Unsupported proxy syntax in '79.137.192.252:9050': Malformed input to a URL function
+000 time=0.000000
+proxy 77.51.182.67:1081 -> curl: (5) Unsupported proxy syntax in '77.51.182.67:1081': Malformed input to a URL function
+000 time=0.000000
+proxy 217.144.162.41:1081 -> curl: (5) Unsupported proxy syntax in '217.144.162.41:1081': Malformed input to a URL function
+000 time=0.000000
+proxy 164.215.66.139:1081 -> curl: (5) Unsupported proxy syntax in '164.215.66.139:1081': Malformed input to a URL function
+000 time=0.000000
+proxy 188.113.171.120:1081 -> curl: (5) Unsupported proxy syntax in '188.113.171.120:1081': Malformed input to a URL function
+000 time=0.000000
 
 === telegram getMe ===
-{"ok":true,"result":{"id":8855326871,"is_bot":true,"first_name":"\u041d\u043e\u0432\u043e\u0441\u0442\u0438","username":"News_for_mbt_bot","can_join_groups":true,"can_read_all_group_messages":false,"supports_inline_queries":false,"supports_guest_queries":false,"can_connect_to_business":false,"has_ma
+{"ok":true,"result":{"id":8855326871,"is_bot":true,"first_name":"\u041d\u043e\u0432\u043e\u0441\u0442\u0438","username":"News_for_mbt_bot","can_join_groups":true,"can_read_all_group_messages":false,"s
 done
