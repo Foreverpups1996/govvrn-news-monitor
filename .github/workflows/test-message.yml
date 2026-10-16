@@ -1,0 +1,36 @@
+name: Проверка отправки
+
+# Запускается вручную: Actions → «Проверка отправки» → Run workflow.
+# Отправляет получателю одно тестовое сообщение — чтобы убедиться,
+# что секреты заданы верно и бот может писать в чат.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  send-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v4
+
+      - name: Настроить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Установить зависимости
+        run: pip install -r requirements.txt
+
+      - name: Отправить тестовое сообщение
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_PROXY: ${{ secrets.TELEGRAM_PROXY }}
+        run: python news_monitor.py --test
