@@ -1,9 +1,11 @@
 name: Новости govvrn.ru → Telegram
 
 on:
-  schedule:
-    # Каждые 15 минут (время UTC; MSK = UTC+3)
-    - cron: "*/15 * * * *"
+  # ВРЕМЕННО ОТКЛЮЧЕНО: сайт govvrn.ru недоступен с зарубежных раннеров GitHub
+  # (запросы висят и задание падает по таймауту 10 минут).
+  # schedule:
+  #   # Каждые 15 минут (время UTC; MSK = UTC+3)
+  #   - cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
       send_latest:

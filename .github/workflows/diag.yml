@@ -1,0 +1,62 @@
+name: Диагностика доступа (временно)
+
+# ВРЕМЕННЫЙ файл. Запускается автоматически при изменении самого себя,
+# пишет результат в diag.txt и коммитит его, чтобы можно было прочитать без логов.
+
+on:
+  push:
+    paths:
+      - ".github/workflows/diag.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v4
+
+      - name: Проверить доступность
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          exec > diag.txt 2>&1
+          echo "date=$(date -u +%FT%TZ)"
+          echo "runner_ip=$(curl -sS --max-time 20 https://api.ipify.org || echo fail)"
+          echo
+          echo "=== DNS ==="
+          getent hosts www.govvrn.ru || echo "dns: fail"
+          echo
+          echo "=== govvrn.ru напрямую (6 попыток, таймаут 20с) ==="
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -sS -o body.html -w "%{http_code} time=%{time_total}" --max-time 20 https://www.govvrn.ru/news/all 2>&1 || true)
+            size=$(stat -c %s body.html 2>/dev/null || echo 0)
+            echo "attempt $i: $code size=$size"
+            if [ "${size:-0}" -gt 20000 ]; then echo "ОТВЕТ ПОЛУЧЕН"; break; fi
+            sleep 3
+          done
+          echo
+          echo "=== через https://api.allorigins.win (зарубежный прокси) ==="
+          curl -sS -o proxy1.out -w "code=%{http_code} time=%{time_total} size=%{size_download}\n" --max-time 30 "https://api.allorigins.win/raw?url=https%3A%2F%2Fwww.govvrn.ru%2Fnews%2Fall" || true
+          echo
+          echo "=== через https://r.jina.ai (зарубежный ридер) ==="
+          curl -sS -o proxy2.out -w "code=%{http_code} time=%{time_total} size=%{size_download}\n" --max-time 40 "https://r.jina.ai/https://www.govvrn.ru/news/all" || true
+          echo
+          echo "=== telegram getMe ==="
+          curl -sS --max-time 20 "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" | head -c 300 || echo "telegram: fail"
+          echo
+          echo "done"
+
+      - name: Сохранить результат
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add diag.txt
+          git commit -m "Диагностика доступа [skip ci]" || echo "нет изменений"
+          git pull --rebase origin "$GITHUB_REF_NAME" || true
+          git push || true
