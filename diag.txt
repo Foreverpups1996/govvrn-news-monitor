@@ -1,0 +1,29 @@
+date=2026-10-16T21:03:42Z
+runner_ip=52.248.45.87
+
+=== DNS ===
+91.223.217.100  www.govvrn.ru
+
+=== govvrn.ru напрямую (6 попыток, таймаут 20с) ===
+attempt 1: curl: (28) Connection timed out after 20001 milliseconds
+000 time=20.001342 size=0
+attempt 2: curl: (28) Connection timed out after 20002 milliseconds
+000 time=20.002268 size=0
+attempt 3: curl: (28) Connection timed out after 20000 milliseconds
+000 time=20.000697 size=0
+attempt 4: curl: (28) Connection timed out after 20001 milliseconds
+000 time=20.001401 size=0
+attempt 5: curl: (28) Connection timed out after 20000 milliseconds
+000 time=20.000723 size=0
+attempt 6: curl: (28) Connection timed out after 20002 milliseconds
+000 time=20.002654 size=0
+
+=== через https://api.allorigins.win (зарубежный прокси) ===
+code=408 time=8.165818 size=24
+
+=== через https://r.jina.ai (зарубежный ридер) ===
+code=422 time=18.549278 size=625
+
+=== telegram getMe ===
+{"ok":true,"result":{"id":8855326871,"is_bot":true,"first_name":"\u041d\u043e\u0432\u043e\u0441\u0442\u0438","username":"News_for_mbt_bot","can_join_groups":true,"can_read_all_group_messages":false,"supports_inline_queries":false,"supports_guest_queries":false,"can_connect_to_business":false,"has_ma
+done
