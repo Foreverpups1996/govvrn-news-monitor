@@ -38,6 +38,19 @@ jobs:
       - name: Установить зависимости
         run: pip install -r requirements.txt
 
+      # ВАЖНО: запуск может ждать в очереди (concurrency) и стартовать с коммита,
+      # который был актуален в момент постановки в очередь. Поэтому перед работой
+      # подтягиваем самый свежий state.json, иначе можно отправить уже отправленное.
+      - name: Получить актуальное состояние из репозитория
+        run: |
+          git fetch origin "$GITHUB_REF_NAME" || true
+          if git show "origin/$GITHUB_REF_NAME:state.json" > /tmp/state.json 2>/dev/null; then
+            cp /tmp/state.json state.json
+            echo "Актуальное состояние получено ($(python -c "import json;print(len(json.load(open('state.json',encoding='utf-8-sig')).get('seen',[])))") записей)."
+          else
+            echo "На сервере ещё нет state.json — он будет создан при первом запуске."
+          fi
+
       - name: Проверить новости и отправить в Telegram
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -48,17 +61,51 @@ jobs:
 
       - name: Сохранить состояние (чтобы не слать дубли)
         run: |
+          set -u
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add state.json
-          if git diff --cached --quiet; then
-            echo "Состояние не изменилось."
-          else
+
+          cat > /tmp/merge_state.py <<'PY'
+          import json, sys
+
+          remote, local, out = sys.argv[1], sys.argv[2], sys.argv[3]
+          a = json.load(open(remote, encoding="utf-8-sig"))
+          b = json.load(open(local, encoding="utf-8-sig"))
+          seen = []
+          for key in list(a.get("seen", [])) + list(b.get("seen", [])):
+              if key not in seen:
+                  seen.append(key)
+          merged = {"seen": seen}
+          proxy = b.get("proxy") or a.get("proxy")
+          if proxy:
+              merged["proxy"] = proxy
+          with open(out, "w", encoding="utf-8") as fh:
+              json.dump(merged, fh, ensure_ascii=False, indent=2)
+          PY
+
+          cp state.json /tmp/state_local.json
+          for i in 1 2 3 4 5; do
+            git fetch origin "$GITHUB_REF_NAME"
+            if git show "origin/$GITHUB_REF_NAME:state.json" > /tmp/state_remote.json 2>/dev/null; then
+              python /tmp/merge_state.py /tmp/state_remote.json /tmp/state_local.json /tmp/state_merged.json
+            else
+              cp /tmp/state_local.json /tmp/state_merged.json
+            fi
+            # ставим рабочую копию на свежий коммит сервера и записываем объединённое состояние
+            git reset --hard "origin/$GITHUB_REF_NAME"
+            cp /tmp/state_merged.json state.json
+            git add state.json
+            if git diff --cached --quiet; then
+              echo "Состояние не изменилось — сохранять нечего."
+              exit 0
+            fi
             git commit -m "Обновление состояния новостей [skip ci]"
-            for i in 1 2 3; do
-              git pull --rebase origin "$GITHUB_REF_NAME" && git push && break
-              echo "Пуш не удался, попытка $i..."
-              sleep 10
-            done
-            git push || true
-          fi
+            if git push origin "HEAD:$GITHUB_REF_NAME"; then
+              echo "Состояние сохранено."
+              exit 0
+            fi
+            echo "Пуш не удался, попытка $i..."
+            sleep 5
+          done
+          echo "НЕ УДАЛОСЬ сохранить состояние — при следующем запуске возможны повторы."
+          exit 1
