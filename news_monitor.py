@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """
-Монитор новостей govvrn.ru -> Telegram.
+Монитор новостей Воронежской области -> Telegram.
+
+Источники (по приоритету):
+  1) сайт govvrn.ru — полный поток новостей (напрямую или через бесплатные
+     российские прокси, если сайт блокирует зарубежные дата-центры);
+  2) официальный telegram-канал @govvrn36 (Правительство Воронежской области) —
+     если сайт недоступен. Канал отстаёт от сайта в среднем на ~70 минут и
+     публикует ~20% новостей, поэтому используется только как резерв.
 
 Работает по расписанию (GitHub Actions) или вручную.
 
@@ -9,11 +16,15 @@
   --test             отправить в Telegram тестовое сообщение
   --find-chat        найти chat_id написавших боту пользователей (после /start)
   --send-latest N    отправить N последних новостей (для первого запуска/проверки)
-  --pages N          сколько страниц ленты проверять (по умолчанию 2)
+  --pages N          сколько страниц ленты сайта проверять (по умолчанию 2)
+  --source S         auto | site | telegram — принудительно выбрать источник (по умолчанию auto)
+  --no-proxies       не искать бесплатные прокси (быстро проверить, доступен ли сайт напрямую)
 
 Переменные окружения:
   TELEGRAM_BOT_TOKEN  токен бота от @BotFather (обязательна)
   TELEGRAM_CHAT_ID    числовой chat_id получателя (обязательна, кроме --find-chat)
+  TELEGRAM_PROXY      прокси для Telegram, если он блокируется (например socks5://127.0.0.1:1080)
+  SEND_LATEST         то же, что --send-latest
 """
 
 from __future__ import annotations
@@ -25,6 +36,7 @@ import os
 import re
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -34,8 +46,23 @@ from urllib3.util.retry import Retry
 
 BASE = "https://www.govvrn.ru"
 FEED_URL = f"{BASE}/news/all"
-STATE_FILE = Path(__file__).resolve().with_name("state.json")
-MAX_SEEN = 800  # сколько ссылок хранить в состоянии, чтобы файл не рос вечно
+STATE_FILE = Path(__file__).resolve().parent / "state.json"
+
+CHANNEL = "govvrn36"
+CHANNEL_URL = f"https://t.me/s/{CHANNEL}"
+
+MAX_SEEN = 800  # сколько ключей хранить в состоянии, чтобы файл не рос вечно
+
+MSK = timezone(timedelta(hours=3))
+
+# Жёсткие таймауты: если сайт недоступен, мы должны быстро перейти к следующему
+# варианту (прокси / telegram-канал), а не висеть до таймаута задания.
+SITE_CONNECT_TIMEOUT = 8
+SITE_READ_TIMEOUT = 25
+# Сколько секунд в сумме разрешено потратить на перебор бесплатных прокси
+PROXY_BUDGET_SECONDS = 100
+# Сколько прокси пробовать за один запуск
+PROXY_LIMIT = 10
 
 HEADERS = {
     "User-Agent": (
@@ -48,8 +75,12 @@ HEADERS = {
 
 # Ссылки вида /news/2026/10/15/13210
 NEWS_LINK_RE = re.compile(r"^/news/\d{4}/\d{2}/\d{2}/\d+$")
+NEWS_ANY_RE = re.compile(r"/news/\d{4}/\d{2}/\d{2}/\d+")
+NEWS_ABS_RE = re.compile(r"https?://(?:www\.)?govvrn\.ru(/news/\d{4}/\d{2}/\d{2}/\d+)")
 # Дата вида 15.10.2026 14:53 (для новостей не старше суток сайт показывает «4 ч. назад»)
 DATE_RE = re.compile(r"\b\d{2}\.\d{2}\.\d{4}\s+\d{2}:\d{2}\b")
+# Относительная дата сайта: «4 ч. 14 мин. назад», «12 мин. назад», «только что»
+REL_DATE_RE = re.compile(r"(\d+)\s*ч\.(?:\s*(\d+)\s*мин\.)?\s*назад|(\d+)\s*мин\.\s*назад|только что")
 
 
 def log(msg: str) -> None:
@@ -57,11 +88,11 @@ def log(msg: str) -> None:
 
 
 def make_session() -> requests.Session:
-    """Сессия с автоматическими повторами при сетевых сбоях."""
+    """Сессия с одним автоматическим повтором при сетевых сбоях."""
     session = requests.Session()
     retries = Retry(
-        total=4,
-        backoff_factor=3,
+        total=1,
+        backoff_factor=0.5,
         status_forcelist=(429, 500, 502, 503, 504),
         allowed_methods=("GET", "POST"),
     )
@@ -74,21 +105,6 @@ def make_session() -> requests.Session:
 # ---------------------------------------------------------------------------
 # Парсинг сайта
 # ---------------------------------------------------------------------------
-
-def fetch_page(session: requests.Session, page: int, attempts: int = 3) -> str:
-    url = FEED_URL if page == 0 else f"{FEED_URL}?page={page}"
-    last_error: Exception | None = None
-    for attempt in range(1, attempts + 1):
-        try:
-            resp = session.get(url, timeout=60)
-            resp.raise_for_status()
-            return resp.text
-        except Exception as exc:  # noqa: BLE001 - показываем любую ошибку сети
-            last_error = exc
-            log(f"  попытка {attempt}/{attempt + attempts - 1} для {url}: {exc}")
-            time.sleep(5 * attempt)
-    raise RuntimeError(f"Не удалось загрузить {url}: {last_error}")
-
 
 def parse_page(page_html: str) -> list[dict]:
     """Возвращает новости со страницы ленты в порядке от новых к старым."""
@@ -128,36 +144,211 @@ def parse_page(page_html: str) -> list[dict]:
             if m:
                 date = m.group(0)
 
+        url = BASE + href
         items.append(
             {
-                "url": BASE + href,
+                "key": url,
+                "alt": None,
+                "url": url,
                 "title": re.sub(r"\s+", " ", title).strip(),
                 "date": date,
+                "source": "site",
             }
         )
+
     return items
 
 
-def fetch_news(pages: int = 2) -> list[dict]:
-    """Собирает новости со страниц ленты, без дублей, порядок: новые -> старые."""
+def _looks_like_feed(text: str) -> bool:
+    """Проверяем, что нам вернули именно ленту новостей (защита от мусора и «заглушек» прокси)."""
+    return len(NEWS_ANY_RE.findall(text)) >= 5
+
+
+def discover_proxies() -> list[str]:
+    """Список бесплатных российских прокси из публичных источников."""
     session = make_session()
+    sources = (
+        ("socks5h", "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=5000&country=RU"),
+        ("http", "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=5000&country=RU"),
+        ("socks5h", "https://www.proxy-list.download/api/v1/get?type=socks5&country=RU"),
+    )
+    found: list[str] = []
+    for scheme, url in sources:
+        try:
+            resp = session.get(url, timeout=(6, 15))
+            if resp.status_code != 200:
+                continue
+            for line in resp.text.splitlines():
+                line = line.strip()
+                if not line or ":" not in line:
+                    continue
+                if not re.match(r"^\d{1,3}(?:\.\d{1,3}){3}:\d{2,5}$", line):
+                    continue
+                proxy = f"{scheme}://{line}"
+                if proxy not in found:
+                    found.append(proxy)
+        except Exception as exc:  # noqa: BLE001
+            log(f"  источник прокси недоступен ({url}): {exc}")
+    return found[:PROXY_LIMIT]
+
+
+def fetch_site_htmls(pages: int, cached_proxy: str | None, use_proxies: bool) -> tuple[list[str], str | None]:
+    """Пытается получить страницы ленты сайта: напрямую -> сохранённый прокси -> новые прокси.
+
+    Возвращает (список html-страниц, использованный_прокси_или_None).
+    """
+    session = make_session()
+    deadline = time.monotonic() + PROXY_BUDGET_SECONDS
+
+    def try_proxy(proxy: str | None) -> list[str] | None:
+        proxies = {"http": proxy, "https": proxy} if proxy else None
+        htmls: list[str] = []
+        for page in range(pages):
+            url = FEED_URL if page == 0 else f"{FEED_URL}?page={page}"
+            try:
+                resp = session.get(
+                    url,
+                    timeout=(SITE_CONNECT_TIMEOUT, SITE_READ_TIMEOUT),
+                    proxies=proxies,
+                )
+                resp.raise_for_status()
+                text = resp.text
+            except Exception as exc:  # noqa: BLE001
+                if page == 0:
+                    log(f"    страница 1 не загрузилась: {exc}")
+                    return None
+                log(f"    страница {page + 1} не загрузилась ({exc}) — беру то, что есть")
+                break
+            if page == 0 and not _looks_like_feed(text):
+                log("    ответ не похож на ленту новостей — пропускаю")
+                return None
+            htmls.append(text)
+        return htmls or None
+
+    log("Пробую сайт напрямую...")
+    htmls = try_proxy(None)
+    if htmls:
+        return htmls, None
+
+    if cached_proxy:
+        log(f"Пробую сохранённый прокси {cached_proxy}...")
+        htmls = try_proxy(cached_proxy)
+        if htmls:
+            return htmls, cached_proxy
+
+    if not use_proxies:
+        return [], None
+
+    log("Ищу бесплатные российские прокси...")
+    candidates = discover_proxies()
+    log(f"  найдено кандидатов: {len(candidates)}")
+    for proxy in candidates:
+        if time.monotonic() > deadline:
+            log("  время на перебор прокси вышло.")
+            break
+        log(f"  пробую {proxy}...")
+        htmls = try_proxy(proxy)
+        if htmls:
+            log(f"  прокси подошёл: {proxy}")
+            return htmls, proxy
+
+    return [], None
+
+
+def fetch_site(pages: int, cached_proxy: str | None, use_proxies: bool = True) -> tuple[list[dict], str | None]:
+    """Новости с сайта (могут быть получены через прокси)."""
+    htmls, proxy = fetch_site_htmls(max(1, pages), cached_proxy, use_proxies)
+    if not htmls:
+        raise RuntimeError("Сайт govvrn.ru недоступен (ни напрямую, ни через бесплатные прокси).")
+
     seen_urls: set[str] = set()
     items: list[dict] = []
-    for page in range(pages):
-        log(f"Загружаю страницу ленты {page + 1}/{pages}...")
-        page_items = parse_page(fetch_page(session, page))
+    for idx, page_html in enumerate(htmls):
+        page_items = parse_page(page_html)
         added = 0
         for item in page_items:
-            if item["url"] in seen_urls:
+            if item["key"] in seen_urls:
                 continue
-            seen_urls.add(item["url"])
+            seen_urls.add(item["key"])
             items.append(item)
             added += 1
-        log(f"  найдено новостей: {len(page_items)} (новых для нас: {added})")
+        log(f"  страница {idx + 1}: новостей {len(page_items)}, новых для нас {added}")
         if added == 0:
-            break  # дальше только повторы
+            break
+
     if not items:
-        raise RuntimeError("На странице новостей не найдено ни одной новости — возможно, изменилась вёрстка сайта.")
+        raise RuntimeError("Лента новостей загрузилась, но новостей не найдено — возможно, изменилась вёрстка.")
+    return items, proxy
+
+
+# ---------------------------------------------------------------------------
+# Резервный источник: официальный telegram-канал @govvrn36
+# ---------------------------------------------------------------------------
+
+def fetch_channel() -> list[dict]:
+    """Свежие посты официального канала региона (веб-версия t.me/s/<channel>)."""
+    session = make_session()
+    try:
+        resp = session.get(CHANNEL_URL, timeout=(10, 30))
+        resp.raise_for_status()
+        page_html = resp.text
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"Не удалось открыть {CHANNEL_URL}: {exc}") from exc
+
+    soup = BeautifulSoup(page_html, "html.parser")
+    items: list[dict] = []
+    for msg in soup.select("div.tgme_widget_message"):
+        data_post = (msg.get("data-post") or "").strip()
+        if "/" not in data_post:
+            continue
+        post_id = data_post.split("/")[-1]
+        if not post_id.isdigit():
+            continue
+
+        date = ""
+        time_el = msg.select_one("time[datetime]")
+        if time_el is not None and time_el.get("datetime"):
+            try:
+                dt = datetime.fromisoformat(time_el["datetime"]).astimezone(MSK)
+                date = dt.strftime("%d.%m.%Y %H:%M")
+            except Exception:  # noqa: BLE001
+                date = ""
+
+        text_el = msg.select_one(".tgme_widget_message_text")
+        text = text_el.get_text("\n", strip=True) if text_el is not None else ""
+        text = re.sub(r"[ \t]*\n[ \t]*", "\n", text).strip()
+        if not text:
+            continue  # медиа без подписи — отправлять нечего
+
+        title = text.split("\n")[0].strip()
+        if len(title) > 300:
+            title = title[:297].rstrip() + "…"
+
+        url = f"https://t.me/{CHANNEL}/{post_id}"
+        alt = None
+        m = NEWS_ABS_RE.search(text)
+        if m:
+            # в посте часто есть ссылка на страницу сайта — используем её для дедупликации
+            alt = BASE + m.group(1).rstrip("/")
+
+        items.append(
+            {
+                "key": f"tg:{post_id}",
+                "alt": alt,
+                "url": url,
+                "title": re.sub(r"\s+", " ", title).strip(),
+                "date": date,
+                "source": "telegram",
+                "order": int(post_id),
+            }
+        )
+
+    if not items:
+        raise RuntimeError(
+            f"В канале @{CHANNEL} не найдено ни одного поста — возможно, изменилась страница preview."
+        )
+
+    items.sort(key=lambda i: i["order"], reverse=True)  # от новых к старым
     return items
 
 
@@ -165,20 +356,24 @@ def fetch_news(pages: int = 2) -> list[dict]:
 # Состояние
 # ---------------------------------------------------------------------------
 
-def load_state() -> set[str]:
+def load_state() -> tuple[set[str], str | None]:
+    """Возвращает (множество уже отправленных ключей, сохранённый рабочий прокси)."""
     if not STATE_FILE.exists():
-        return set()
+        return set(), None
     try:
         data = json.loads(STATE_FILE.read_text(encoding="utf-8-sig"))
-        return set(data.get("seen", []))
     except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(f"Файл состояния {STATE_FILE.name} повреждён: {exc}")
+        raise RuntimeError(f"Файл состояния {STATE_FILE.name} повреждён: {exc}") from exc
+    proxy = (data.get("proxy") or "").strip() or None
+    return set(data.get("seen", [])), proxy
 
 
-def save_state(seen: set[str]) -> None:
-    ordered = list(seen)[-MAX_SEEN:]
+def save_state(seen: set[str], proxy: str | None) -> None:
+    payload: dict = {"seen": list(seen)[-MAX_SEEN:]}
+    if proxy:
+        payload["proxy"] = proxy
     STATE_FILE.write_text(
-        json.dumps({"seen": ordered}, ensure_ascii=False, indent=2),
+        json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
@@ -259,11 +454,22 @@ def format_message(item: dict) -> str:
     if item["date"] and ("назад" in item["date"] or "только что" in item["date"]):
         date = "сегодня, " + date
     link = html.escape(item["url"], quote=True)
+    if item.get("source") == "telegram":
+        label = "Открыть в Telegram"
+    else:
+        label = "Читать на govvrn.ru"
     return (
         f"📰 <b>{title}</b>\n"
         f"🕒 {date}\n"
-        f"🔗 <a href=\"{link}\">Читать на govvrn.ru</a>"
+        f"🔗 <a href=\"{link}\">{label}</a>"
     )
+
+
+def item_keys(item: dict) -> set[str]:
+    keys = {item["key"]}
+    if item.get("alt"):
+        keys.add(item["alt"])
+    return keys
 
 
 def find_chats(token: str) -> None:
@@ -296,14 +502,36 @@ def find_chats(token: str) -> None:
 # Основной поток
 # ---------------------------------------------------------------------------
 
+def collect_items(args, cached_proxy: str | None) -> tuple[list[dict], str | None]:
+    """Собирает новости: сначала сайт, при недоступности — telegram-канал."""
+    source = args.source
+    if source in ("auto", "site"):
+        try:
+            items, proxy = fetch_site(max(1, args.pages), cached_proxy, use_proxies=not args.no_proxies)
+            log(f"Источник: сайт govvrn.ru{f' (через прокси {proxy})' if proxy else ' (напрямую)'}.")
+            return items, proxy
+        except Exception as exc:  # noqa: BLE001
+            log(f"Сайт недоступен: {exc}")
+            if source == "site":
+                raise
+
+    log("Переключаюсь на резервный источник — telegram-канал @govvrn36.")
+    items = fetch_channel()
+    log(f"Источник: канал @{CHANNEL}.")
+    return items, cached_proxy
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Новости govvrn.ru в Telegram")
+    parser = argparse.ArgumentParser(description="Новости Воронежской области в Telegram")
     parser.add_argument("--dry-run", action="store_true", help="ничего не отправлять и не сохранять")
     parser.add_argument("--test", action="store_true", help="отправить тестовое сообщение")
     parser.add_argument("--find-chat", action="store_true", help="показать chat_id написавших боту")
     parser.add_argument("--send-latest", type=int, default=0, metavar="N",
                         help="отправить N последних новостей при первом запуске")
-    parser.add_argument("--pages", type=int, default=2, help="сколько страниц ленты проверять")
+    parser.add_argument("--pages", type=int, default=2, help="сколько страниц ленты сайта проверять")
+    parser.add_argument("--source", choices=("auto", "site", "telegram"), default="auto",
+                        help="источник: auto (сайт, иначе канал), site, telegram")
+    parser.add_argument("--no-proxies", action="store_true", help="не перебирать бесплатные прокси")
     args = parser.parse_args()
 
     # то же значение можно передать переменной окружения (используется в GitHub Actions)
@@ -313,6 +541,11 @@ def main() -> int:
         except ValueError:
             log("Переменная SEND_LATEST должна быть числом; игнорирую.")
             args.send_latest = 0
+
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        pass
 
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
@@ -347,24 +580,25 @@ def main() -> int:
         send_message(
             token,
             chat_id,
-            "✅ Тестовое сообщение.\nМонитор новостей govvrn.ru настроен и работает.",
+            "✅ Тестовое сообщение.\nМонитор новостей Воронежской области настроен и работает.",
         )
         log("Тестовое сообщение отправлено.")
         return 0
 
-    # --- получаем новости с сайта ---
-    try:
-        items = fetch_news(pages=max(1, args.pages))
-    except Exception as exc:  # noqa: BLE001
-        log(f"ОШИБКА при загрузке сайта: {exc}")
-        return 1
-    log(f"Всего новостей на ленте: {len(items)}")
+    seen, cached_proxy = load_state()
 
-    seen = load_state()
+    # --- получаем новости ---
+    try:
+        items, used_proxy = collect_items(args, cached_proxy)
+    except Exception as exc:  # noqa: BLE001
+        log(f"ОШИБКА при получении новостей: {exc}")
+        return 1
+    log(f"Всего новостей получено: {len(items)}")
+
     first_run = not seen
 
     if first_run and args.send_latest <= 0 and not args.dry_run:
-        save_state({i["url"] for i in items})
+        save_state({k for i in items for k in item_keys(i)}, used_proxy)
         log(
             "Первый запуск: все текущие новости помечены как прочитанные, "
             "отправлять ничего не будем (чтобы не забивать чат).\n"
@@ -374,18 +608,18 @@ def main() -> int:
 
     if args.send_latest > 0:
         # «Догнать» N самых свежих ещё не отправленных новостей (от старых к новым)
-        pending = [i for i in items if i["url"] not in seen]
+        pending = [i for i in items if not (item_keys(i) & seen)]
         new_items = list(reversed(pending[: args.send_latest]))
         mark_all_seen = True
     else:
-        # Новости на ленте идут от новых к старым; шлём от старых к новым
-        new_items = [i for i in reversed(items) if i["url"] not in seen]
+        # Новости идут от новых к старым; шлём от старых к новым
+        new_items = [i for i in reversed(items) if not (item_keys(i) & seen)]
         mark_all_seen = False
 
     if not new_items:
         log("Новых новостей нет.")
-        if args.dry_run:
-            return 0
+        if not args.dry_run:
+            save_state(seen, used_proxy)
         return 0
 
     log(f"Новых новостей: {len(new_items)}")
@@ -402,8 +636,8 @@ def main() -> int:
         try:
             send_message(token, chat_id, format_message(item))
             log(f"  ✔ отправлено: {item['title'][:60]}")
-            sent.add(item["url"])
-            seen.add(item["url"])
+            sent |= item_keys(item)
+            seen |= item_keys(item)
             time.sleep(1)  # не спамим API Telegram
         except Exception as exc:  # noqa: BLE001
             errors += 1
@@ -411,9 +645,9 @@ def main() -> int:
 
     if mark_all_seen:
         # при разовом «догоне» помечаем всё, чтобы старое не ушло позже
-        seen |= {i["url"] for i in items}
+        seen |= {k for i in items for k in item_keys(i)}
 
-    save_state(seen)
+    save_state(seen, used_proxy)
     log(f"Готово. Отправлено: {len(sent)}, ошибок: {errors}. Состояние сохранено.")
     return 1 if errors else 0
 
