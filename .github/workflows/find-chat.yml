@@ -1,0 +1,38 @@
+name: Найти chat_id
+
+# Запускается вручную: вкладка Actions → «Найти chat_id» → Run workflow.
+# Нужен, если ваш провайдер блокирует api.telegram.org и локально --find-chat не работает.
+#
+# Перед запуском:
+#   1) Добавьте секрет TELEGRAM_BOT_TOKEN (Settings → Secrets and variables → Actions)
+#   2) Попросите контакта @IF_13TIKHONOVA написать вашему боту /start
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  find-chat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v4
+
+      - name: Настроить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Установить зависимости
+        run: pip install -r requirements.txt
+
+      - name: Показать chat_id всех, кто писал боту
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_PROXY: ${{ secrets.TELEGRAM_PROXY }}
+        run: python news_monitor.py --find-chat

@@ -187,9 +187,29 @@ def save_state(seen: set[str]) -> None:
 # Telegram
 # ---------------------------------------------------------------------------
 
+def tg_proxies() -> dict | None:
+    """Прокси для Telegram, если задан TELEGRAM_PROXY (например socks5://127.0.0.1:1080)."""
+    proxy = os.environ.get("TELEGRAM_PROXY", "").strip()
+    if not proxy:
+        return None
+    return {"http": proxy, "https": proxy}
+
+
 def tg_api(token: str, method: str, payload: dict, timeout: int = 30) -> dict:
     url = f"https://api.telegram.org/bot{token}/{method}"
-    resp = requests.post(url, json=payload, timeout=timeout)
+    try:
+        resp = requests.post(url, json=payload, timeout=timeout, proxies=tg_proxies())
+    except requests.exceptions.SSLError as exc:
+        raise RuntimeError(
+            "Нет соединения с api.telegram.org (SSL-обрыв). Обычно это блокировка "
+            "Telegram-API вашим провайдером.\n"
+            "Варианты: 1) включить VPN; 2) задать прокси в переменной TELEGRAM_PROXY "
+            "(например socks5://127.0.0.1:1080); 3) выполнить это через GitHub Actions "
+            "(workflow «Найти chat_id») — там блокировки нет.\n"
+            f"Техническое описание: {exc}"
+        ) from exc
+    except requests.exceptions.RequestException as exc:
+        raise RuntimeError(f"Не удалось соединиться с api.telegram.org: {exc}") from exc
     try:
         data = resp.json()
     except Exception:  # noqa: BLE001
@@ -294,7 +314,11 @@ def main() -> int:
         return 1
 
     if args.find_chat:
-        find_chats(token)
+        try:
+            find_chats(token)
+        except Exception as exc:  # noqa: BLE001
+            log(f"ОШИБКА: {exc}")
+            return 1
         return 0
 
     if not chat_id:
@@ -302,9 +326,13 @@ def main() -> int:
             "TELEGRAM_CHAT_ID не задана. Чтобы узнать её:\n"
             "  1) Контакт пишет боту: /start\n"
             "  2) Запустите: py news_monitor.py --find-chat\n"
+            "     (или через GitHub Actions → workflow «Найти chat_id», если провайдер блокирует Telegram)\n"
             "  3) Скопируйте chat_id в секрет TELEGRAM_CHAT_ID"
         )
-        find_chats(token)
+        try:
+            find_chats(token)
+        except Exception as exc:  # noqa: BLE001
+            log(f"ОШИБКА: {exc}")
         return 1
 
     if args.test:

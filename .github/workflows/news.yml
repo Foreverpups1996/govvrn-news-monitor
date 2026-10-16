@@ -36,6 +36,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_PROXY: ${{ secrets.TELEGRAM_PROXY }}
         run: python news_monitor.py
 
       - name: Сохранить состояние (чтобы не слать дубли)
